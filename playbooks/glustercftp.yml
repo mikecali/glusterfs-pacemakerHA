@@ -1,0 +1,197 @@
+---
+- hosts: gluster
+  become: yes
+
+  vars_files:
+    - vars.yml
+
+
+
+  tasks:
+
+    - name: Generate /etc/hosts
+      template:
+        src=hosts.j2
+        dest=/etc/hosts
+
+    - name: install gluster
+      yum: name={{ item }} state=present
+      with_items:
+        - "centos-release-gluster"
+
+    - name: Install packages
+      yum: name={{ item }}  state=present
+      with_items:
+        - glusterfs-server
+        - glusterfs-client
+
+    - name: enable gluster from startup
+      command: systemctl enable glusterd.service
+
+    - name: start glusterd daemon
+      command: systemctl start glusterd.service
+
+    - name: Ensure Gluster brick and mount directories exist.
+      file: "path={{ item }} state=directory mode=0775"
+      with_items:
+        - "{{ gluster_brick_dir }}"
+        - "{{ gluster_mount_dir }}"
+
+    - name: Configure Gluster volume.
+      gluster_volume:
+        state: present
+        name: "{{ gluster_brick_name }}"
+        brick: "{{ gluster_brick_dir }}"
+        replicas: 3
+        cluster: "{{ groups.gluster | join(',') }}"
+        host: "{{ inventory_hostname }}"
+        force: yes
+      run_once: true
+
+    - name: Ensure Gluster volume is mounted.
+      mount:
+        name: "{{ gluster_mount_dir }}"
+        src: "{{ inventory_hostname }}:/{{ gluster_brick_name }}"
+        fstype: glusterfs
+        opts: "defaults,_netdev"
+        state: mounted
+
+#install crushftp requirements
+    - name: make sure java is installed
+      yum:
+        name: java
+        state: latest
+
+#Create an installation directory
+    - name: Create installation directory
+      file:
+       path: /var/opt/CrushFTP7_PC
+       state: directory
+       mode: 0755
+
+#Installation of crushftp
+    - name: Copy Crushftp installer
+      copy:
+        src: /home/mikecali/Vagrant/crushftp-poc/package/CrushFTP7_PC.zip 
+        dest: /var/opt/
+
+#make sure unzip is installed
+    - name: Install unzip
+      yum:
+         name: unzip
+         state: latest
+
+    - name: check if chrusftp directory exist
+      stat: 
+        path: /var/opt/CrushFTP7_PC/
+      register: dir_check  
+
+
+#Install CrushFTP
+    - name: Unzip the installer
+      unarchive:
+        src:  /var/opt/CrushFTP7_PC.zip
+        dest: /var/opt/
+        copy: no
+      become: yes
+      when: dir_check.stat.isdir is defined and dir_chekc.stat.isdir
+
+    - name: change the file mode 
+      shell: chmod 700 /var/opt/CrushFTP7_PC/crushftp_init.sh
+
+    - name: verify if Crushftp is running
+      shell: /var/opt/CrushFTP7_PC/crushftp_init.sh status
+      register: cftp_status 
+
+#Start the crushftp
+    - name: Start CrushFTP
+      shell: sudo /var/opt/CrushFTP7_PC/crushftp_init.sh start
+      become: yes
+      when: cftp_status.stdout == "Shutting down CrushFTP"
+
+#Generate Admin Password
+    - name: Generate Admin Password
+      shell: sudo /usr/bin/java -jar /var/opt/CrushFTP7_PC/CrushFTP.jar -a "crushadmin" "password"
+      become: yes
+
+#cluster installation
+    - name: install clustering software
+      yum: name={{ item }} state=present
+      with_items:
+        - "pcs"
+        - "fence-agents-all"
+
+    - name: Determine if firewalld service masked
+      command: systemctl is-enabled firewalld
+      register: os_firewall_firewalld_masked_output
+      changed_when: false
+      failed_when: false
+
+    - name: Unmask firewalld service
+      command: systemctl unmask firewalld
+      when: os_firewall_firewalld_masked_output.stdout == "masked"
+
+    - name: Start and enable firewalld service
+      service:
+        name: firewalld
+        state: restarted
+        enabled: yes
+      register: result
+
+
+    - name: enable Firewall to allow HA traffic
+      shell: firewall-cmd --permanent --add-service=high-availability
+      when: result.changed
+      ignore_errors: yes
+
+
+    - name: add Firewall to allow HA traffic
+      shell: firewall-cmd --add-service=high-availability
+      when: result.changed
+      ignore_errors: yes
+
+    - name: change password of hacluster
+      user: 
+        name: hacluster
+        update_password: always
+        password: "hacluster"
+
+    - name: start the HA process
+      service:
+         name: pcsd.service
+         state: started
+
+    - name: enable HA process 
+      service:
+         name: pcsd.service
+         enabled: yes
+
+    - name: Authorize cluster nodes
+      pcs_auth: fqdn={{ hostvars[item]['ansible_fqdn'].split('.')[0] }} username={{ cluster_user }} password={{ cluster_user_pass }}
+      run_once: true
+      with_items: play_hosts
+  
+    - name: Setup cluster
+      command: >
+        pcs cluster setup --name {{ cluster_name }} --start
+        {% for host in play_hosts %}
+        {% set short_name = hostvars[host]['ansible_fqdn'].split('.') %}
+        {{ short_name[0] }}
+        {% endfor %}
+      run_once: true
+      args:
+        creates: /var/lib/pacemaker/cib/cib.xml
+
+    - name: Start cluster services on all nodes
+      service: name={{ item }} state=started
+      with_items:
+         - pacemaker 
+         - corosync
+
+    - name: Enable cluster services on boot
+      service: name={{ item }} enabled=yes
+      when: cluster_enable_service == true
+      with_items:
+        - pacemaker 
+        - corosync
+    
