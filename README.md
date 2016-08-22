@@ -5,8 +5,10 @@ Playbooks created to deploy Centos 7.2 on via Vagrant and Ansible
 This playbook will create 3 node glusterfs with Active-passive clustering using pacemaker
 
 gluster1
-gluster2 ==> 3 node gluster ==> clustering (active-passive)
+gluster2 
 gluster3
+
+3 node gluster ==> clustering (active-passive)
 
 Requirements:
 
