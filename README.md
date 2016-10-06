@@ -1,6 +1,6 @@
 # glusterfs-pacemakerHA
 
-Playbooks created to deploy Centos 7.2 on via Vagrant and Ansible
+Playbooks created to deploy glusterfs+pacemaker on Centos 7.2 via Vagrant using Ansible
 
 This playbook will create 3 node glusterfs with Active-passive clustering using pacemaker
 
